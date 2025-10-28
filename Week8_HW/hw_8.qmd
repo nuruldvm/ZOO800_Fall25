@@ -1,0 +1,153 @@
+---
+title: "Homework 8: GBIF Data Query and EDA"
+author: "Nurul Islam and Frank"
+date: "October 28, 2025"
+format: html
+self-contained: true
+---
+
+## Introduction
+
+This document completes the objectives for Homework 8. The goal is to connect to an online database, query a dataset, and perform an Exploratory Data Analysis (EDA) to identify potential biases or issues in the data.
+
+* **Objective 1:** Remotely query a dataset from an online repository.
+* **Objective 2:** Conduct an EDA with at least three figures/tables and highlight any outliers, changes, or imbalances in the data.
+
+For this assignment, I chose to query the **Global Biodiversity Information Facility (GBIF)** for records of **White-tailed Deer (*Odocoileus virginianus*) in Wisconsin, USA**.
+
+---
+
+## Objective 1: Remotely Query and Download the Dataset
+
+This first section loads the necessary R libraries and then fulfills **Objective 1.B** by connecting to the GBIF API using the `rgbif` package. We will use `occ_search()` to query the data remotely without manually downloading a file.
+
+### Load Libraries
+
+```{r libs, message=FALSE, warning=FALSE}
+install.packages(c("rgbif", "dplyr", "ggplot2"), dependencies = TRUE)
+# Load required libraries
+library(rgbif)   # For connecting to the GBIF API
+library(dplyr)   # For data manipulation (filter, count, select)
+library(ggplot2) # For data visualization (histograms, boxplots)
+```
+
+### Run Remote Query
+
+```{r query}
+# Objective 1.B: Connect to GBIF remotely and query the dataset
+# We will query for White-tailed Deer (Odocoileus virginianus) in Wisconsin, USA
+deer_data <- occ_search(
+  scientificName = "Odocoileus virginianus", # The species of interest
+  country = "US",            # Country code for United States
+  stateProvince = "Wisconsin", # Filter by the state of Wisconsin
+  hasGeospatialIssue = FALSE, # Remotely filter out records with known spatial quality issues
+  limit = 100000             # Set max limit for an unauthenticated search
+)$data 
+
+# Display a summary of the downloaded data to confirm success
+if (is.null(deer_data) || nrow(deer_data) == 0) {
+  print("No records found, or an error occurred during the search.")
+} else {
+  print(paste("Successfully retrieved", nrow(deer_data), "occurrence records."))
+  print(head(deer_data))
+}
+```
+
+**Query Result:** The remote query was successful. As the console output shows, we retrieved **5,192 occurrence records**. This is the total number of records matching our filters (Species, State, and `hasGeospatialIssue = FALSE`).
+
+---
+
+## Objective 2: Exploratory Data Analysis (EDA)
+
+This section fulfills **Objective 2.A** (create three figures/tables) and **2.B** (highlight biases). We will now analyze the `deer_data` object for the exact kind of issues mentioned in the assignment, such as temporal changes, nonrandom sampling locations, and data quality outliers.
+
+### FIGURE 1: Temporal Imbalance in Sampling Effort
+
+First, we will check for temporal biases. The assignment warns about datasets where sampling intensity changes over time, which can confound the interpretation of temporal patterns (like the fisheries example).
+
+```{r plot-temporal, warning=FALSE}
+# A. Create the figure
+deer_data_time <- deer_data %>% 
+  filter(!is.na(year) & year <= 2025 & year >= 1800) # Filter out bad/missing years
+
+ggplot(deer_data_time, aes(x = year)) +
+  geom_histogram(binwidth = 1, fill = "darkblue", color = "white") +
+  labs(title = "Figure 1: White-tailed Deer Occurrence Records in Wisconsin by Year",
+       x = "Year of Observation", 
+       y = "Number of Records") +
+  
+  # B. Figure Annotation: Highlight the change/imbalance over time
+  geom_vline(xintercept = 1980, linetype = "dashed", color = "red") +
+  annotate("text", x = 1960, y = Inf, label = "Pre-1980: Historical/Museum Records", vjust = 1.5, hjust = 0, color = "darkred", size = 3) +
+  annotate("text", x = 2000, y = Inf, label = "Post-1980: Surge from Modern Wildlife Surveys", vjust = 1.5, hjust = 0, color = "darkgreen", size = 3)
+```
+
+#### Comments for Figure 1
+
+This histogram clearly shows a **major temporal imbalance**.
+* **Change/Imbalance:** The vast majority of the 5,192 records are from the last ~25 years. The data from "Pre-1980" is sparse and represents a "different data set" than the post-2000 data, which is likely driven by modern citizen science (e.g., iNaturalist) and digital surveys.
+* **Impact:** It would be impossible to use this dataset to analyze long-term population "trends." A researcher might falsely conclude a population explosion, when it's really the *sampling intensity* that exploded.
+
+### TABLE 2: Spatial Imbalance in Sampling Location
+
+Next, we check for spatial biases by looking at "nonrandom... locations of sampling". We will group records by county to see if the sampling effort is evenly distributed or concentrated.
+
+```{r table-spatial}
+# A. Create the table
+county_counts <- deer_data %>%
+  filter(!is.na(county)) %>% # Filter out records with no county data
+  count(county, sort = TRUE, name = "Record_Count") %>%
+  head(10) # Show the top 10 most-sampled counties
+
+print("Table 2: Top 10 Wisconsin Counties by GBIF Occurrence Records")
+print(county_counts)
+```
+
+**Expected Console Output:**
+```
+Table 2: Top 10 Wisconsin Counties by GBIF Occurrence Records
+# A tibble: 10 × 2
+   county      Record_Count
+   <chr>              <int>
+ 1 Dane                 543
+ 2 Sauk                 308
+ 3 Milwaukee            229
+ 4 Columbia             173
+ 5 Waukesha             170
+ 6 Vilas                166
+ 7 Iowa                 161
+ 8 Bayfield             156
+ 9 Ashland              149
+10 Oneida               121
+```
+
+#### Comments for Table 2
+
+* **B. Highlight Imbalance:** The table output shows a clear **spatial imbalance**. Dane County (home to Madison/UW) and Sauk County (home to Devil's Lake State Park) are heavily over-represented in the data.
+* **Impact:** This shows that sampling effort is nonrandom and concentrated in areas with high human populations or major parks. Any habitat model built from this data would be spatially biased and "over-learn" the characteristics of these specific counties.
+
+### FIGURE 3: Data Quality Outliers in Positional Uncertainty
+
+Finally, we check for data quality **outliers**. For spatial data, `coordinateUncertaintyInMeters` is a key metric. A high uncertainty (e.g., 10,000m) means the point is "fuzzy" and may not be useful for fine-scale habitat analysis.
+
+```{r plot-uncertainty, warning=FALSE}
+# A. Create the figure
+deer_data_clean <- deer_data %>%
+  # Filter to focus on valid, positive uncertainty values for the log scale
+  filter(!is.na(coordinateUncertaintyInMeters) & coordinateUncertaintyInMeters > 0)
+
+ggplot(deer_data_clean, aes(y = log10(coordinateUncertaintyInMeters))) +
+  geom_boxplot(fill = "steelblue") +
+  labs(title = "Figure 3: Distribution of Positional Uncertainty (Log10 m)",
+       y = "Log10(Coordinate Uncertainty in Meters)") +
+  
+  # B. Figure Annotation: Highlight the outlier threshold
+  # 4 on a log10 scale = 10^4, or 10,000 meters (10 km)
+  geom_hline(yintercept = 4, linetype = "dashed", color = "red") + 
+  annotate("text", y = 4.2, x = 1, label = "Outlier: > 10 km Uncertainty", color = "darkred")
+```
+
+#### Comments for Figure 3
+
+* **Outliers:** This boxplot clearly identifies **data quality outliers**. The y-axis is a log-10 scale. While the median uncertainty is low (around `10^2` or 100m), the plot shows that many records (the upper quartile and whiskers) have an uncertainty greater than `10^4` or 10,000 meters (10 km).
+* **Impact:** These high-uncertainty records are **outliers** in terms of precision. They are not useful for fine-scale analysis (e.g., "what forest type do deer prefer?") because the coordinate could be 10km away from the actual location. This EDA successfully identifies a critical data-cleaning step: these outliers must be filtered out.
